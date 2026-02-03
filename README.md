@@ -40,6 +40,19 @@ curl -X POST http://localhost:8000/rooms/<roomName>/speak \
   -H "Content-Type: application/json" \
   -d '{"text":"testing 1 2"}'
 ```
+
+curl -X POST http://localhost:8000/session
+
+
+  curl -X POST http://localhost:8000/rooms/<roomName>/speak \
+  -H "Content-Type: application/json" \
+  -d '{"text":"first message long enough to hear"}'
+
+curl -X POST http://localhost:8000/rooms/<roomName>/speak \
+  -H "Content-Type: application/json" \
+  -d '{"text":"second message should interrupt"}'
+
+
 The agent logs should show text receipt and speaking timestamps, and audio should be audible in the LiveKit room.
 
 ## Env validation

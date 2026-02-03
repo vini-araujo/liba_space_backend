@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 import time
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 from livekit.agents import JobContext, WorkerOptions, cli
 from livekit.agents.voice.agent import Agent
 from livekit.agents.voice.agent_session import AgentSession
+from livekit.plugins import openai, tavus
 
 from .config import get_settings
 
@@ -52,13 +54,59 @@ def _now_ts() -> float:
     return time.time()
 
 
+async def _start_tavus_once(agent_session: AgentSession, room: Any) -> tavus.AvatarSession:
+    settings = get_settings()
+    avatar_session = tavus.AvatarSession(
+        replica_id=settings.tavus_replica_id,
+        persona_id=settings.tavus_persona_id,
+        api_key=settings.tavus_api_key,
+        avatar_participant_name="Tavus-avatar",
+        avatar_participant_identity="tavus-avatar",
+    )
+    await avatar_session.start(
+        agent_session=agent_session,
+        room=room,
+        livekit_url=settings.livekit_url,
+        livekit_api_key=settings.livekit_api_key,
+        livekit_api_secret=settings.livekit_api_secret,
+    )
+    return avatar_session
+
+
+async def start_tavus_with_retry(agent_session: AgentSession, room: Any) -> tavus.AvatarSession:
+    delay = 0.5
+    for attempt in range(3):
+        try:
+            session = await _start_tavus_once(agent_session, room)
+            logger.info("tavus avatar started participant=Tavus-avatar")
+            return session
+        except Exception:
+            logger.exception("tavus start failed attempt=%s", attempt + 1)
+            if attempt >= 2:
+                raise
+            await asyncio.sleep(delay)
+            delay *= 2
+    raise RuntimeError("tavus start failed")
+
+
 async def entrypoint(ctx: JobContext) -> None:
     settings = get_settings()
     await ctx.connect()
     identity = _participant_identity(ctx.room)
     logger.info("connected room=%s identity=%s", ctx.room.name, identity)
 
-    session = AgentSession(tts=settings.tts_model)
+    tts_model = os.getenv("OPENAI_TTS_MODEL", settings.openai_tts_model)
+    tts_voice = os.getenv("OPENAI_TTS_VOICE", settings.openai_tts_voice)
+    session = AgentSession(
+        tts=openai.TTS(
+            model=tts_model,
+            voice=tts_voice,
+        )
+    )
+
+    # Start Tavus before first speech so avatar tracks are ready.
+    await start_tavus_with_retry(session, ctx.room)
+
     agent = Agent(instructions="You are a realtime TTS agent. Speak the provided text verbatim.")
     await session.start(agent=agent, room=ctx.room, record=False)
 
@@ -77,11 +125,8 @@ async def entrypoint(ctx: JobContext) -> None:
                 await session.interrupt()
             except Exception:
                 logger.exception("Failed to interrupt current speech")
-            logger.info("speaking started at %.3f", _now_ts())
-            try:
-                session.say(cleaned)
-            except Exception:
-                logger.exception("Failed to speak text")
+            logger.info("say() called at %.3f", _now_ts())
+            session.say(cleaned)
 
     def on_data_received(*args: Any, **kwargs: Any) -> None:
         topic = kwargs.get("topic")
